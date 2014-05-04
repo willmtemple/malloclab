@@ -74,16 +74,16 @@ void prnHeap();
 #define GET_ALLOC(tp)     (*((uint32_t *)(tp)) & 0x1)
 
 // Compute header and footer pointers from block pointer
-#define HDRP(bp)            ((void *)(bp) - WORD_SIZE)
-#define FTRP(bp)            ((void *)(bp) + GET_SIZE(HDRP(bp)) - DWORD_SIZE)
+#define HDRP(bp)            (((void *)(bp)) - WORD_SIZE)
+#define FTRP(bp)            (((void *)(bp)) + GET_SIZE(HDRP(bp)) - DWORD_SIZE)
 
 //Set the info tag header
 #define SET_TAG(tp, tag)    (*(uint32_t *)(tp) = ((uint32_t)(tag)))
 
 //Calculate pointer to next and prev blocks, c.o. Bryant and O'Hallaron
-#define NEXT_BLKP(bp) ((void *)(bp) + GET_SIZE(((void *)(bp) - WORD_SIZE)))
-#define PREV_BLKP(bp) ((void *)(bp) - GET_SIZE(((void *)(bp) - DWORD_SIZE)))
+#define NEXT_BLKP(bp) ((void *)(bp) + GET_SIZE(HDRP(bp)))
 #define PREV_FTRP(bp) ((void *)(bp) - DWORD_SIZE) //fast calc prev footer
+#define PREV_BLKP(bp) ((void *)(bp) - GET_SIZE(PREV_FTRP(bp)))
 
 //Compute best multiple of DWORD_SIZE to fit a given size of variable
 #define DMULT(x)    (DWORD_SIZE * (((size) + DWORD_SIZE + (DWORD_SIZE-1)) / DWORD_SIZE))
@@ -176,7 +176,7 @@ static void * findSpace( size_t size )
         if( (sz >= size) && !GET_ALLOC(HDRP(bp)) ) return bp;
 
         bp = NEXT_BLKP(bp);
-        sz = GET_SIZE(bp);
+        sz = GET_SIZE(HDRP(bp));
 
     }
 
@@ -289,7 +289,7 @@ void prnHeap()
 
         printf("%p:%09d, %d\n", bp, sz, GET_ALLOC(HDRP(bp)));
         bp = NEXT_BLKP(bp);
-        sz = GET_SIZE(bp);
+        sz = GET_SIZE(HDRP(bp));
 
     } while ( sz != 0 );
 
