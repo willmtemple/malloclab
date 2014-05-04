@@ -1,30 +1,20 @@
 /*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- * 
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
- *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+ * wmtemple-mm.c -- Implementation of malloc(), realloc(), and free()
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "mm.h"
 #include "memlib.h"
 
-/*********************************************************
- * NOTE TO STUDENTS: Before you do anything else, please
- * provide your team information in the following struct.
- ********************************************************/
+/* Team information. */
 team_t team = {
     /* Team name */
-    "MLG Computer Science Pro",
+    "bjmcmorran-wmtemple",
     /* First member's full name */
     "William Temple",
     /* First member's email address */
@@ -35,131 +25,237 @@ team_t team = {
     "bjmcmorran@wpi.edu"
 };
 
-/* K&R sec. 8.7 */
+/*
+ * Function Prototypes
+ */
 
-typedef struct header {
-    struct header *nP;
-    //struct header *pP;
-    size_t sz;
-} Header;
+// Extend heap by units WORDS
+static void * extend_heap( size_t units );
 
-#define PAGE_SIZE 4 //16 byte page. //top kekek
+// Coalesce adjacent free blocks
+static void * coalesce( void * bp );
 
-/* single word (4) or double word (8) alignment */
-#define ALIGNMENT 8
+//Find a free block of appropriate size
+static void * findSpace( size_t size );
 
-/* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
+//Allocate space at bp of size bytes
+static void place( void * bp, size_t size );
 
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+void prnHeap();
 
-//Size of our header ceiled to 8B
-#define ALIGN_HEADER (ALIGN(sizeof(Header)))
+/*
+ * Constant definitions
+ */
 
-/* Global Variables */
+#define DEBUG 1
 
-static Header root; // This is the root of our LinkedList
-static Header * freep;
+#define WORD_SIZE   4
+#define DWORD_SIZE  8
+
+#define ALIGNMENT   8
+#define PAGE_SIZE   4096
+
+#define MIN_BLK_SZ  2*DWORD_SIZE //enough for the header info and a DWORD
+
+#define SIZE_T_SIZE 4
+
+/* 
+ * Some useful macros, based on "Computer Systems"
+ *   Bryant & O'Hallaron SS 9.9.12
+ */
+
+#define MAX(x, y)           ((x)>(y)?(x):(y))
+
+//Pack a size and alloc bit into a uint tag
+#define MK_INFO(sz, al)   ((sz)|(al))
+
+// Retreive info from journaling tags
+#define GET_SIZE(tp)      (*((uint32_t *)(tp)) & ~0x7)
+#define GET_ALLOC(tp)     (*((uint32_t *)(tp)) & 0x1)
+
+// Compute header and footer pointers from block pointer
+#define HDRP(bp)            ((void *)(bp) - WORD_SIZE)
+#define FTRP(bp)            ((void *)(bp) + GET_SIZE(HDRP(bp)) - DWORD_SIZE)
+
+//Set the info tag header
+#define SET_TAG(tp, tag)    (*(uint32_t *)(tp) = ((uint32_t)(tag)))
+
+//Calculate pointer to next and prev blocks, c.o. Bryant and O'Hallaron
+#define NEXT_BLKP(bp) ((void *)(bp) + GET_SIZE(((void *)(bp) - WORD_SIZE)))
+#define PREV_BLKP(bp) ((void *)(bp) - GET_SIZE(((void *)(bp) - DWORD_SIZE)))
+#define PREV_FTRP(bp) ((void *)(bp) - DWORD_SIZE) //fast calc prev footer
+
+//Compute best multiple of DWORD_SIZE to fit a given size of variable
+#define DMULT(x)    (DWORD_SIZE * (((size) + DWORD_SIZE + (DWORD_SIZE-1)) / DWORD_SIZE))
+
+//Global pointer to the start of our heap, i.e. the first free block.
+static void * g_heapPtr;
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    memset( &root, sizeof( Header ), 0 );
-    root.nP = &root;
-    //root.pP = &root;
-    root.sz = 0;
-    freep = &root;
+    //Start a free list with some dummy data
+    if((g_heapPtr = mem_sbrk(4*WORD_SIZE)) == (void *)-1)
+        return -1; //Fail if we can't get 16 bytes to start (god help us)
+
+    uint32_t dummyTag = MK_INFO(DWORD_SIZE, 1);
+
+    SET_TAG(g_heapPtr, 0); // This is padding.     The first two WORDS in this list
+    SET_TAG(g_heapPtr + WORD_SIZE, dummyTag);  //  are a dummy entry (alloc'd) to
+    SET_TAG(g_heapPtr + DWORD_SIZE, dummyTag); //  safeguard from initialization
+
+    // This will be overwritten in a minute. We need it to avoid segfaulting.
+    SET_TAG(g_heapPtr + 3*WORD_SIZE, MK_INFO(0, 1));
+
+    g_heapPtr += DWORD_SIZE; // Set the heap list pointer between the header and footer.
+
+    //Extend the heap by one page.
+    if ( extend_heap(PAGE_SIZE/WORD_SIZE) == NULL) return -1;
+
+    //Sehr guht.
     return 0;
 }
 
-/* morecore:  ask system for more memory */
-static Header *moreMemory(unsigned n)
+static void * extend_heap( size_t units )
 {
 
-    void * np = NULL;
+    void * bp;
+    size_t sz = units * WORD_SIZE;
 
-    // allocate either PAGE_SIZE or the smallest multiple of PAGE_SIZE
-    //   not less than n
-    n = ( n < PAGE_SIZE )?PAGE_SIZE:((n/PAGE_SIZE)*PAGE_SIZE);
+    if ((long)(bp = mem_sbrk(sz)) == -1) return NULL; //we are oom
 
-    //Align n to smallest multiple of ALIGN_HEADER not less than n
-    n = (n/ALIGN_HEADER) * ALIGN_HEADER;
+    //Overwrite the old epilogue header with new info for this free block
+    SET_TAG(HDRP(bp), MK_INFO(sz, 0)); //New header
+    SET_TAG(FTRP(bp), MK_INFO(sz, 0)); //New footer
 
+    SET_TAG(HDRP(NEXT_BLKP(bp)), MK_INFO(0, 1)); //New epilogue
 
-    if( (np = mem_sbrk( n )) == (void *)-1 ) return NULL;
-
-    Header * hp = (Header *)np;
-    hp->sz = n - ALIGN_HEADER; 
-    mm_free( (void *)hp + ALIGN_HEADER );
-    return freep;
+    return coalesce( bp );
 
 }
 
 /* 
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
+ * mm_malloc - 
  */
 void * mm_malloc(size_t size)
 {
 
-    Header * prevp = freep;
-    Header * p = NULL;
-    size_t alsize = ALIGN( size );
+    void * bp;
 
-    for( p = prevp->nP; ; prevp = p, p = p->nP ) {
+    if( size == 0 ) return NULL;
 
-        if( p->sz == alsize ) {
+    //Voodoo to figure out how much memory we need for overhead and to preserve alignment.
+    size_t adj_size = (size <= DWORD_SIZE)?(2*DWORD_SIZE):DMULT(size);
 
-            prevp->nP = p->nP;
-            freep = prevp;
-            return ((void *) p) + ALIGN_HEADER;
+    if ((bp = findSpace(adj_size)) != NULL) {
 
-        } else if( p->sz > (alsize + ALIGN_HEADER) ) {
-
-            size_t oldsize = p->sz;
-            p->sz = alsize;
-            prevp->nP = ((void *)p) + alsize + ALIGN_HEADER;
-            prevp->nP->sz = oldsize - p->sz -ALIGN_HEADER;
-
-            freep = prevp; //Why??
-            return ((void *) p) + ALIGN_HEADER;
-
-        } else if( p == freep ) {
-
-            if( (p = moreMemory( alsize + ALIGN_HEADER )) == NULL ) return NULL;
-
-        }
+        place( bp, adj_size );
+        return bp;
 
     }
+
+    if((bp = extend_heap(MAX(adj_size, PAGE_SIZE)/WORD_SIZE)) == NULL)
+        return NULL;
  
+    place(bp, adj_size);
+
+    return bp;
+
+}
+
+static void * findSpace( size_t size )
+{
+
+    void * bp = g_heapPtr;
+    uint32_t sz =  GET_SIZE(HDRP(bp));
+
+    while( sz != 0 ) {
+
+        if( (sz >= size) && !GET_ALLOC(HDRP(bp)) ) return bp;
+
+        bp = NEXT_BLKP(bp);
+        sz = GET_SIZE(bp);
+
+    }
+
+    return NULL;
+
+}
+
+static void place( void * bp, size_t size )
+{
+
+    size_t wholesz = GET_SIZE(HDRP(bp));
+    size_t remsz = wholesz - size;
+
+    size = ( remsz < MIN_BLK_SZ )?wholesz:size;
+
+    SET_TAG(HDRP(bp), MK_INFO(size, 1));
+    SET_TAG(FTRP(bp), MK_INFO(size, 1));
+
+    if( remsz >= MIN_BLK_SZ ) {
+
+        SET_TAG(HDRP(NEXT_BLKP(bp)), MK_INFO(remsz, 0));
+        SET_TAG(FTRP(NEXT_BLKP(bp)), MK_INFO(remsz, 0)); 
+
+    }
+
 }
 
 /*
- * mm_free - Freeing a block does nothing.
+ * mm_free - Return a block to the free list.
  */
 void mm_free(void *ptr)
 {
 
-    Header * bp = (Header *)(ptr - ALIGN_HEADER);
-    Header * p;
+    size_t sz = GET_SIZE(HDRP(ptr));
 
-    for( p = freep; !( bp > p && bp < p->nP); p = p->nP )
-        if( p >= p->nP && ( bp > p || bp < p->nP) )
-            break;
+    //Set the alloc bit to zero on the header and footer
+    SET_TAG(HDRP(ptr), MK_INFO(sz, 0));
+    SET_TAG(FTRP(ptr), MK_INFO(sz, 0));
 
-    if( ptr + bp->sz == p->nP ) { //Adjacent bottom of free block
-        bp->sz += p->nP->sz + ALIGN_HEADER;
-        bp->nP = p->nP->nP;
-    } else bp->nP = p->nP;
+    // coalesce adjacent free blocks together
+    coalesce(ptr);
 
-    if( p + p->sz + ALIGN_HEADER == bp) {
-        p->sz += bp->sz + ALIGN_HEADER;
-        p->nP = bp->nP;
-    } else p->nP = bp;
+}
 
-    freep = p;
+static void * coalesce( void * bp )
+{
+
+    uint8_t pAlloc = GET_ALLOC(PREV_FTRP(bp));
+    uint8_t nAlloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t sz = GET_SIZE(HDRP(bp));
+
+    if( pAlloc && nAlloc ) return bp;
+
+    else if ( !pAlloc && nAlloc ) { // Prev is free
+        
+        sz += GET_SIZE(PREV_FTRP(bp));
+        SET_TAG(FTRP(bp), MK_INFO(sz, 0));
+        SET_TAG(HDRP(PREV_BLKP(bp)), MK_INFO(sz, 0));
+        bp = PREV_BLKP(bp); // set bp back to appropriate start
+
+    } else if ( pAlloc && !nAlloc ) { // Next is free
+        
+        sz += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        SET_TAG(HDRP(bp), MK_INFO(sz, 0));
+        SET_TAG(FTRP(bp), MK_INFO(sz, 0));
+    
+    } else { // both are free
+
+        sz += GET_SIZE(PREV_FTRP(bp)) +
+              GET_SIZE(HDRP(NEXT_BLKP(bp)));
+
+        SET_TAG(HDRP(PREV_BLKP(bp)), MK_INFO(sz, 0));
+        SET_TAG(FTRP(NEXT_BLKP(bp)), MK_INFO(sz, 0));
+
+        bp = PREV_BLKP(bp);
+
+    }
+
+    return bp;
 
 }
 
@@ -181,4 +277,22 @@ void *mm_realloc(void *ptr, size_t size)
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
+}
+
+void prnHeap()
+{
+
+    void * bp = g_heapPtr;
+    size_t sz = GET_SIZE(HDRP(bp));
+
+    do {
+
+        printf("%p:%09d, %d\n", bp, sz, GET_ALLOC(HDRP(bp)));
+        bp = NEXT_BLKP(bp);
+        sz = GET_SIZE(bp);
+
+    } while ( sz != 0 );
+
+    printf("Reached sentinel! %p:%d\n", bp, sz);
+
 }
