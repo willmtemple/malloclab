@@ -325,6 +325,39 @@ void *mm_realloc(void *ptr, size_t size)
 
 }
 
+/*
+ * mm_check checks the heap for consistency
+ * This checker is relatively simple because our malloc algorithm does not
+ * use an explicit free list. It checks for contigious free blocks that
+ * escaped coalescing. Free list blocks really being free and free blocks
+ * being on the free list are impossible to test without an explicit free
+ * list. We do not use pointers in our headers, and it is impossible to
+ * check if blocks overlap in our implementation because we cannot tell
+ * the difference between header and payload data.
+ */
+int mm_check() {
+    void * bp = g_heapPtr;
+    size_t size = GET_SIZE(HDRP(bp));
+    int prevAlloc = 1;
+    int isValid = 1;
+
+    do {
+        int alloc = GET_ALLOC(HDRP(bp));
+        if (!prevAlloc && !alloc) {
+            printf("Contigious free block at %p.\n", bp);
+            isValid = 0;
+        }
+        bp = NEXT_BLKP(bp);
+        size = GET_SIZE(HDRP(bp));
+        prevAlloc = alloc;
+    } while (size != 0);
+
+    if (isValid) {
+        printf("Heap consistent.\n");
+    }
+    return isValid;
+}
+
 void prnHeap()
 {
 
