@@ -72,3 +72,12 @@ using set pointers stored within the (unused) payload of the free blocks,
 which will reduce time required for search through the block chain from time
 linear in the number of total blocks to time linear in the number of free
 blocks only.
+
+	Our package also includes a rudimentary heap_checker. mm_check() checks the
+heap for consistency. The checker is relatively simple because our malloc
+algorithm does not use an explicit free list. It checks for contigious free
+blocks that escaped coalescing. Free list blocks really being free and free
+blocks being on the free list are impossible to test without an explicit free
+list. We do not use pointers in our headers, and it is impossible to check if
+blocks overlap in our implementation because we cannot tell the difference
+between header and payload data.
