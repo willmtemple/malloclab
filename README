@@ -1,52 +1,74 @@
-#####################################################################
-# CS:APP Malloc Lab
-# Handout files for students
-#
-# Copyright (c) 2002, R. Bryant and D. O'Hallaron, All rights reserved.
-# May not be used, modified, or copied without permission.
-#
-######################################################################
+===============================================================================
+=
+=	CS2011 - MALLOCLAB
+=
+=     William M. Temple		<wt@wpi.edu>
+=     Benjamin J. McMorran	<bjmcmorran@wpi.edu>
+=
+===============================================================================
 
-***********
-Main Files:
-***********
+--ABOUT--
 
-mm.{c,h}	
-	Your solution malloc package. mm.c is the file that you
-	will be handing in, and is the only file you should modify.
+    This package provides a rudimentary implementation of a C dynamic memory
+allocator. It has been designed for the CS:APP malloclab package and utilizes
+virtual system calls enumerated in memlib.h. Particularly, calls to sbrk() are
+emulated through calls to a virtual system via mem_sbrk().
 
-mdriver.c	
-	The malloc driver that tests your mm.c file
+--HOW IT WORKS--
 
-short{1,2}-bal.rep
-	Two tiny tracefiles to help you get started. 
+	The system utilizes an implicitly linked list to track blocks of free
+space on a memory heap. The system allocates memory from the operating system
+onto its heap by incrementing the brk pointer and storing free space in blocks.
 
-Makefile	
-	Builds the driver
+The blocks are stored like so:
 
-**********************************
-Other support files for the driver
-**********************************
++----------+
+|  HEADER  | 4 BYTES
++----------+
+|          |
+|          |
+| PAYLOAD  | VARIABLE SIZE
+|          |
+|          |
++----------+
+|  FOOTER  | 4 BYTES
++----------+
+|  HEADER  |
++----------+
+| PAYLOAD  |
+|          |
+|..........|
 
-config.h	Configures the malloc lab driver
-fsecs.{c,h}	Wrapper function for the different timer packages
-clock.{c,h}	Routines for accessing the Pentium and Alpha cycle counters
-fcyc.{c,h}	Timer functions based on cycle counters
-ftimer.{c,h}	Timer functions based on interval timers and gettimeofday()
-memlib.{c,h}	Models the heap and sbrk function
+	Where HEADER and FOOTER are identical SINGLE WORDS created by storing the
+block's size in the upper 31 bits of the word, and by storing a single bit on
+the bottom of the word representing whether or not the block is currently
+allocated. Note that the size of a block must be a multiple of 8 bytes not less
+than 16 bytes and is inclusive of the size of the header and footer. So, the
+size of any PAYLOAD is equal to the size of the BLOCK minus 8 bytes.
 
-*******************************
-Building and running the driver
-*******************************
-To build the driver, type "make" to the shell.
+	With this scheme, the position of any block relative to a given block can
+be computed. The location of the next block for any PAYLOAD pointer bp is given
+by the pointer bp + the block's size. The pointer to the previous block can
+always be computed by retreiving the previous footer (eight bytes above bp),
+and subtracting the size contained within the footer from bp. The
+implementation of this method within our code is greatly facilitated by
+judicious use of C preprocessor macros.
 
-To run the driver on a tiny test trace:
+	The package searches the implicit free list (by looping through the block
+chain) to find the first block which will fully contain the requested size, and
+returns a pointer to that region in memory to the user. If the amount of space
+left over within the block after allocation is at least 16 bytes in width, the
+allocator will split the free block, and create a new free block after the
+block recently allocated.
 
-	unix> mdriver -V -f short1-bal.rep
+	When a block is freed, it is returned to the free list and coalesced in the
+free block chain. When the block is coalesced, it is joined to any adjacent
+free blocks to allow for optimal memory utilization by large requests.
 
-The -V option prints out helpful tracing and summary information.
-
-To get a list of the driver flags:
-
-	unix> mdriver -h
-
+We understand the limitations of this algorithm compared to an explicitly-
+linked form of free list, however, we were unable to implement this change due
+to time constraints. In an ideal world, free blocks will link to each other
+using set pointers stored within the (unused) payload of the free blocks,
+which will reduce time required for search through the block chain from time
+linear in the number of total blocks to time linear in the number of free
+blocks only.
