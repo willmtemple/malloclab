@@ -57,8 +57,6 @@ void prnHeap();
 
 #define MIN_BLK_SZ  2*DWORD_SIZE //enough for the header info and a DWORD
 
-#define SIZE_T_SIZE 4
-
 /* 
  * Some useful macros, based on "Computer Systems"
  *   Bryant & O'Hallaron SS 9.9.12
@@ -77,13 +75,22 @@ void prnHeap();
 #define HDRP(bp)            (((void *)(bp)) - WORD_SIZE)
 #define FTRP(bp)            (((void *)(bp)) + GET_SIZE(HDRP(bp)) - DWORD_SIZE)
 
-//Set the info tag header
+//Get/Set the info tag header
+#define GET_TAG(tp)         (*(uint32_t *)(tp))
 #define SET_TAG(tp, tag)    (*(uint32_t *)(tp) = ((uint32_t)(tag)))
 
 //Calculate pointer to next and prev blocks, c.o. Bryant and O'Hallaron
 #define NEXT_BLKP(bp) ((void *)(bp) + GET_SIZE(HDRP(bp)))
 #define PREV_FTRP(bp) ((void *)(bp) - DWORD_SIZE) //fast calc prev footer
 #define PREV_BLKP(bp) ((void *)(bp) - GET_SIZE(PREV_FTRP(bp)))
+
+//Pull the next and prev pointers off of the explicit free list
+#define NEXT_FREEP(bp)  (*((void *)(bp)) + WORD_SIZE)
+#define PREV_FREEP(bp)  (*((void *)(bp)))
+
+//Set the next and prev fps from the explicit free list
+#define SET_NFREEP(bp, nPtr)  ((*((void *)(bp)) + WORD_SIZE) = ((void *)(nPtr)))
+#define SET_PFREEP(bp, pPtr)  ((*((void *)(bp))) = ((void *)(pPtr)))
 
 //Compute best multiple of DWORD_SIZE to fit a given size of variable
 #define DMULT(x)    (DWORD_SIZE * (((size) + DWORD_SIZE + (DWORD_SIZE-1)) / DWORD_SIZE))
@@ -260,23 +267,62 @@ static void * coalesce( void * bp )
 }
 
 /*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
+ * mm_realloc
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
     void *newptr;
     size_t copySize;
-    
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
-      return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-      copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+
+    //acts like free if size is null, acts like malloc if ptr is null
+    if( size == 0 ) {
+
+        mm_free(ptr);
+        return NULL;
+
+    } else if( ptr == NULL ) return mm_malloc(size);
+
+    //Voodoo to figure out how much memory we need for overhead and to preserve alignment.
+    size_t adj_size = (size <= DWORD_SIZE)?(2*DWORD_SIZE):DMULT(size);
+
+    size_t cur_size = GET_SIZE(HDRP(ptr));
+
+    if( adj_size == cur_size ) { //Pointer is exactly the right size.
+
+        return ptr;
+
+    } else if( adj_size < GET_SIZE(HDRP(ptr)) ) {  //Free block might be split,
+                                                    //so free and place at same loc
+
+        //Free is inlined here so that I can use the poitner returned by coalesce()
+        size_t sz = GET_SIZE(HDRP(ptr));
+
+        //Set the alloc bit to zero on the header and footer
+        SET_TAG(HDRP(ptr), MK_INFO(sz, 0));
+        SET_TAG(FTRP(ptr), MK_INFO(sz, 0));
+
+        newptr = coalesce(ptr);
+
+        if(newptr != ptr) memcpy(newptr, ptr, size);    //copy to beginning of free
+                                                        //  block if ptr changes
+
+        place( newptr, adj_size ); //split if necessary
+        return newptr;
+
+    } else { //We need more space.
+
+        if( (newptr = mm_malloc( size )) == NULL) return NULL; //oom
+
+        //If the new size is less than the buffer between the headers, only copy that,
+        //  otherwise copy the whole existing buffer.
+        copySize = ( size < (cur_size - DWORD_SIZE) )?size:(cur_size - DWORD_SIZE);
+
+        memcpy(newptr, ptr, copySize);
+        mm_free(ptr);
+        return newptr;
+
+    }
+
 }
 
 void prnHeap()
