@@ -1,5 +1,9 @@
 /*
  * wmtemple-mm.c -- Implementation of malloc(), realloc(), and free()
+ *   Implemented as part of CS:APP Bryant & O'Hallaron "Computer Systems"
+ *   William M. Temple - CS/ECE 2017
+ *   Benjamin McMorran - CS 2017
+ *   Worcester Polytechnic Institute 2014
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,14 +88,6 @@ void prnHeap();
 #define PREV_FTRP(bp) ((void *)(bp) - DWORD_SIZE) //fast calc prev footer
 #define PREV_BLKP(bp) ((void *)(bp) - GET_SIZE(PREV_FTRP(bp)))
 
-//Pull the next and prev pointers off of the explicit free list
-#define NEXT_FREEP(bp)  (*((void *)(bp)) + WORD_SIZE)
-#define PREV_FREEP(bp)  (*((void *)(bp)))
-
-//Set the next and prev fps from the explicit free list
-#define SET_NFREEP(bp, nPtr)  ((*((void *)(bp)) + WORD_SIZE) = ((void *)(nPtr)))
-#define SET_PFREEP(bp, pPtr)  ((*((void *)(bp))) = ((void *)(pPtr)))
-
 //Compute best multiple of DWORD_SIZE to fit a given size of variable
 #define DMULT(x)    (DWORD_SIZE * (((size) + DWORD_SIZE + (DWORD_SIZE-1)) / DWORD_SIZE))
 
@@ -125,6 +121,9 @@ int mm_init(void)
     return 0;
 }
 
+/*
+ * extend_heap - add more memory to the heap
+ */
 static void * extend_heap( size_t units )
 {
 
@@ -156,6 +155,7 @@ void * mm_malloc(size_t size)
     //Voodoo to figure out how much memory we need for overhead and to preserve alignment.
     size_t adj_size = (size <= DWORD_SIZE)?(2*DWORD_SIZE):DMULT(size);
 
+    //If we find space to put the block, place it and return its pointer
     if ((bp = findSpace(adj_size)) != NULL) {
 
         place( bp, adj_size );
@@ -163,6 +163,7 @@ void * mm_malloc(size_t size)
 
     }
 
+    //We didn't have enough room, so extend the heap, place the block, and return.
     if((bp = extend_heap(MAX(adj_size, PAGE_SIZE)/WORD_SIZE)) == NULL)
         return NULL;
  
@@ -172,11 +173,17 @@ void * mm_malloc(size_t size)
 
 }
 
+/*
+ * findSpace - find a block of correct size
+ */
 static void * findSpace( size_t size )
 {
 
     void * bp = g_heapPtr;
     uint32_t sz =  GET_SIZE(HDRP(bp));
+
+    //Loop through the blocks until we find one that is both free and greater than
+    //  or equal to size bytes wide
 
     while( sz != 0 ) {
 
@@ -187,21 +194,31 @@ static void * findSpace( size_t size )
 
     }
 
+    //We didn't find anything...
     return NULL;
 
 }
 
+/*
+ * place - put partition the free block for return
+ */
 static void place( void * bp, size_t size )
 {
 
     size_t wholesz = GET_SIZE(HDRP(bp));
     size_t remsz = wholesz - size;
 
+    //If the remainder size isn't large enough to constitute a block, then
+    //  use the whole size of this block, even though it is larger than required.
     size = ( remsz < MIN_BLK_SZ )?wholesz:size;
 
+    //This header/footer information is good regardless of whether
+    //  or not we are splitting the block
     SET_TAG(HDRP(bp), MK_INFO(size, 1));
     SET_TAG(FTRP(bp), MK_INFO(size, 1));
 
+    //If the remainder size is sufficiently large, then split the
+    //  block and create new headers/footers
     if( remsz >= MIN_BLK_SZ ) {
 
         SET_TAG(HDRP(NEXT_BLKP(bp)), MK_INFO(remsz, 0));
@@ -234,6 +251,9 @@ static void * coalesce( void * bp )
     uint8_t pAlloc = GET_ALLOC(PREV_FTRP(bp));
     uint8_t nAlloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t sz = GET_SIZE(HDRP(bp));
+
+    //Following elif blocks perform necessary resizing and mutation on the headers and footers
+    //  depending on which adjacent blocks are free
 
     if( pAlloc && nAlloc ) return bp;
 
@@ -325,6 +345,10 @@ void *mm_realloc(void *ptr, size_t size)
 
 }
 
+/*
+/*
+ * prnHeap
+ *
 void prnHeap()
 {
 
@@ -342,3 +366,4 @@ void prnHeap()
     printf("Reached sentinel! %p:%d\n", bp, sz);
 
 }
+*/

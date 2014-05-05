@@ -304,7 +304,7 @@ int main(int argc, char **argv)
 		printf("and performance.\n");
 	    mm_stats[i].secs = fsecs(eval_mm_speed, &speed_params);
 	}
-    prnHeap();
+
 	free_trace(trace);
     }
 
